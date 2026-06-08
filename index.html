@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scratch 3 Code Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Scratch 3 .sb3 Converter</p>
+        <h1>Upload a Scratch project and inspect generated code.</h1>
+        <p class="intro">This static app runs entirely in your browser. It reads a Scratch 3 save file, extracts the project blocks, and translates scripts into Python, C++, JavaScript, Java, or C#-style code.</p>
+      </div>
+      <label class="upload-card" for="fileInput">
+        <span>Choose .sb3 file</span>
+        <strong id="fileName">No file selected</strong>
+        <input id="fileInput" type="file" accept=".sb3,application/zip">
+      </label>
+    </section>
+
+    <section class="controls" aria-label="Conversion controls">
+      <label>
+        Language
+        <select id="languageSelect">
+          <option value="python">Python</option>
+          <option value="cpp">C++</option>
+          <option value="javascript">JavaScript</option>
+          <option value="java">Java</option>
+          <option value="csharp">C#</option>
+        </select>
+      </label>
+      <button id="copyButton" type="button" disabled>Copy code</button>
+      <button id="downloadButton" type="button" disabled>Download code</button>
+    </section>
+
+    <section id="message" class="message" hidden></section>
+
+    <section class="workspace">
+      <aside class="sidebar">
+        <h2>Sprites</h2>
+        <div id="targetList" class="target-list"></div>
+      </aside>
+      <section class="code-panel">
+        <div class="code-heading">
+          <h2 id="codeTitle">Converted Code</h2>
+          <span id="scriptCount">Upload a project to begin</span>
+        </div>
+        <pre><code id="codeOutput">// Your converted Scratch code will appear here.</code></pre>
+      </section>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
