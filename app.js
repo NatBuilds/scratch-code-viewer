@@ -153,12 +153,15 @@ class BaseConverter {
   constructor(target) {
     this.target = target;
     this.blocks = target.blocks || {};
+    this.events = [];
   }
 
   convertScript(blockId) {
     const block = this.blocks[blockId];
     if (!block) return "";
-    const header = this.headerFor(block);
+    const name = this.nameForTopLevelBlock(block);
+    const header = this.eventHeader(name);
+    this.events.push({ opcode: block.opcode, name, key: block.fields?.KEY_OPTION?.[0] || "" });
     const body = this.convertSequence(block.next, 1);
     return [header, body || this.indent(1) + this.noop()].filter(Boolean).join("\n");
   }
@@ -229,9 +232,6 @@ class BaseConverter {
     const block = this.blocks[blockId];
     if (!block) return this.literal("");
     const op = block.opcode;
-    if (block.fields && Object.keys(block.fields).length > 0 && !op.startsWith("operator_") && !op.startsWith("data_")) {
-      return this.literal(Object.values(block.fields)[0][0]);
-    }
     if (op === "operator_add") return `(${this.value(block, "NUM1")} + ${this.value(block, "NUM2")})`;
     if (op === "operator_subtract") return `(${this.value(block, "NUM1")} - ${this.value(block, "NUM2")})`;
     if (op === "operator_multiply") return `(${this.value(block, "NUM1")} * ${this.value(block, "NUM2")})`;
@@ -247,7 +247,14 @@ class BaseConverter {
     if (op === "operator_round") return this.roundExpr(this.value(block, "NUM"));
     if (op === "operator_contains") return this.containsExpr(this.value(block, "STRING1"), this.value(block, "STRING2"));
     if (op === "data_variable") return this.identifier(block.fields?.VARIABLE?.[0] || "variable");
+    if (op === "data_itemoflist") return this.listItem(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "INDEX"));
+    if (op === "data_lengthoflist") return this.listLength(this.identifier(block.fields?.LIST?.[0] || "list"));
+    if (op === "data_listcontainsitem") return this.listContains(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "ITEM"));
     if (op === "sensing_answer") return this.identifier("answer");
+    if (op === "sensing_current") return this.currentDatePart(block.fields?.CURRENTMENU?.[0] || "second");
+    if (block.fields && Object.keys(block.fields).length > 0 && !op.startsWith("operator_") && !op.startsWith("data_")) {
+      return this.literal(Object.values(block.fields)[0][0]);
+    }
     return this.genericExpression(block);
   }
 
@@ -276,10 +283,10 @@ class BaseConverter {
     if (op === "motion_changeyby") return this.call("change_y_by", [this.value(block, "DY")]);
     if (op === "motion_sety") return this.call("set_y", [this.value(block, "Y")]);
     if (op === "motion_ifonedgebounce") return this.call("if_on_edge_bounce", []);
-    if (op === "looks_say") return this.call("say", [this.value(block, "MESSAGE")]);
-    if (op === "looks_sayforsecs") return this.call("say_for_seconds", [this.value(block, "MESSAGE"), this.value(block, "SECS")]);
-    if (op === "looks_think") return this.call("think", [this.value(block, "MESSAGE")]);
-    if (op === "looks_thinkforsecs") return this.call("think_for_seconds", [this.value(block, "MESSAGE"), this.value(block, "SECS")]);
+    if (op === "looks_say") return this.printStatement(this.value(block, "MESSAGE"));
+    if (op === "looks_sayforsecs") return this.printStatement(this.value(block, "MESSAGE"));
+    if (op === "looks_think") return this.printStatement(this.value(block, "MESSAGE"));
+    if (op === "looks_thinkforsecs") return this.printStatement(this.value(block, "MESSAGE"));
     if (op === "looks_show") return this.call("show", []);
     if (op === "looks_hide") return this.call("hide", []);
     if (op === "looks_switchcostumeto") return this.call("switch_costume_to", [this.value(block, "COSTUME")]);
@@ -295,29 +302,37 @@ class BaseConverter {
     if (op === "sound_setvolumeto") return this.call("set_volume_to", [this.value(block, "VOLUME")]);
     if (op === "event_broadcast") return this.call("broadcast", [this.value(block, "BROADCAST_INPUT")]);
     if (op === "event_broadcastandwait") return this.call("broadcast_and_wait", [this.value(block, "BROADCAST_INPUT")]);
+    if (op === "sensing_askandwait") return this.assign(this.identifier("answer"), this.inputExpression(this.value(block, "QUESTION")));
     if (op === "data_setvariableto") return this.assign(this.identifier(block.fields?.VARIABLE?.[0] || "variable"), this.value(block, "VALUE"));
     if (op === "data_changevariableby") return this.increment(this.identifier(block.fields?.VARIABLE?.[0] || "variable"), this.value(block, "VALUE"));
-    if (op === "data_addtolist") return this.call(`${this.identifier(block.fields?.LIST?.[0] || "list")}.append`, [this.value(block, "ITEM")]);
+    if (op === "data_addtolist") return this.listAppend(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "ITEM"));
+    if (op === "data_deleteoflist") return this.listDelete(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "INDEX"));
+    if (op === "data_deletealloflist") return this.listClear(this.identifier(block.fields?.LIST?.[0] || "list"));
+    if (op === "data_insertatlist") return this.listInsert(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "INDEX"), this.value(block, "ITEM"));
+    if (op === "data_replaceitemoflist") return this.listReplace(this.identifier(block.fields?.LIST?.[0] || "list"), this.value(block, "INDEX"), this.value(block, "ITEM"));
     return this.comment(`${blockNames[op] || op}: ${this.describeFields(block)}`.trim());
   }
 
-  headerFor(block) {
+  nameForTopLevelBlock(block) {
     const op = block.opcode;
-    if (op === "event_whenflagclicked") return this.eventHeader("when_green_flag_clicked");
-    if (op === "event_whenkeypressed") return this.eventHeader(`when_${this.identifier(block.fields?.KEY_OPTION?.[0] || "key")}_pressed`);
-    if (op === "event_whenthisspriteclicked") return this.eventHeader("when_this_sprite_clicked");
-    if (op === "event_whenbackdropswitchesto") return this.eventHeader(`when_backdrop_switches_to_${this.identifier(block.fields?.BACKDROP?.[0] || "backdrop")}`);
-    if (op === "event_whenbroadcastreceived") return this.eventHeader(`when_i_receive_${this.identifier(block.fields?.BROADCAST_OPTION?.[0] || "message")}`);
-    if (op === "procedures_definition") return this.customDefinitionHeader(block);
-    return this.eventHeader(this.identifier(blockNames[op] || op));
+    if (op === "event_whenflagclicked") return "when_green_flag_clicked";
+    if (op === "event_whenkeypressed") return `when_${this.identifier(block.fields?.KEY_OPTION?.[0] || "key")}_pressed`;
+    if (op === "event_whenthisspriteclicked") return "when_this_sprite_clicked";
+    if (op === "event_whenbackdropswitchesto") return `when_backdrop_switches_to_${this.identifier(block.fields?.BACKDROP?.[0] || "backdrop")}`;
+    if (op === "event_whenbroadcastreceived") return `when_i_receive_${this.identifier(block.fields?.BROADCAST_OPTION?.[0] || "message")}`;
+    if (op === "procedures_definition") return this.customDefinitionName(block);
+    return this.identifier(blockNames[op] || op);
   }
 
-  customDefinitionHeader(block) {
+  customDefinitionName(block) {
     const prototypeId = block.inputs?.custom_block?.[1];
     const prototype = this.blocks[prototypeId];
     const name = prototype?.mutation?.proccode || "custom_block";
-    return this.eventHeader(this.identifier(name.replace(/%[bs]/g, "arg")));
+    return this.identifier(name.replace(/%[bs]/g, "arg"));
   }
+
+  declarations() { return ""; }
+  entryPoint() { return ""; }
 
   fieldOrInput(block, name) {
     if (block.inputs?.[name]) return this.value(block, name);
@@ -349,7 +364,16 @@ class BaseConverter {
 
 class PythonConverter extends BaseConverter {
   wrap(code) {
-    return `# Converted from Scratch 3 target: ${this.target.name}\n# Runtime helpers such as move_steps() and say() are placeholders for the Scratch engine.\n\n${code || "# No scripts found."}`;
+    return `# Converted from Scratch 3 target: ${this.target.name}\nfrom datetime import datetime\nimport random\nimport time\n\n${this.declarations()}\n\n${code || "# No scripts found."}${this.entryPoint()}`;
+  }
+
+  convertScript(blockId) {
+    const code = super.convertScript(blockId);
+    const names = this.globalNames();
+    if (!code || names.length === 0) return code;
+    const lines = code.split("\n");
+    lines.splice(1, 0, this.indent(1) + `global ${names.join(", ")}`);
+    return lines.join("\n");
   }
 
   eventHeader(name) { return `def ${name}():`; }
@@ -373,15 +397,68 @@ class PythonConverter extends BaseConverter {
   randomExpr(from, to) { return `random.randint(${from}, ${to})`; }
   roundExpr(value) { return `round(${value})`; }
   containsExpr(haystack, needle) { return `(${needle} in ${haystack})`; }
+  printStatement(value) { return `print(${value})`; }
+  inputExpression(prompt) { return `input(str(${prompt}) + " ")`; }
+  listAppend(name, value) { return `${name}.append(${value})`; }
+  listDelete(name, index) { return `del ${name}[${this.listIndex(name, index)}]`; }
+  listClear(name) { return `${name}.clear()`; }
+  listInsert(name, index, value) { return `${name}.insert(${this.listIndex(name, index)}, ${value})`; }
+  listReplace(name, index, value) { return `${name}[${this.listIndex(name, index)}] = ${value}`; }
+  listItem(name, index) { return `${name}[${this.listIndex(name, index)}]`; }
+  listLength(name) { return `len(${name})`; }
+  listContains(name, value) { return `(${value} in ${name})`; }
+  currentDatePart(part) {
+    const formats = { year: "%Y", month: "%m", date: "%d", dayofweek: "%A", hour: "%H", minute: "%M", second: "%S" };
+    return `datetime.now().strftime(${JSON.stringify(formats[String(part).toLowerCase()] || "%S")})`;
+  }
+
+  declarations() {
+    const lines = this.globalNames().map((name) => `${name} = ""`);
+    for (const [, list] of Object.entries(this.target.lists || {})) {
+      lines.push(`${this.identifier(list[0])} = ${JSON.stringify(list[1] || [])}`);
+    }
+    return lines.join("\n");
+  }
+
+  entryPoint() {
+    const greenFlags = this.events.filter((event) => event.opcode === "event_whenflagclicked");
+    const keyEvents = this.events.filter((event) => event.opcode === "event_whenkeypressed");
+    const lines = ["", "", "if __name__ == \"__main__\":"];
+    if (greenFlags.length === 0 && keyEvents.length === 0) return "";
+    for (const event of greenFlags) lines.push(this.indent(1) + `${event.name}()`);
+    if (keyEvents.length > 0) {
+      lines.push(this.indent(1) + "while True:");
+      lines.push(this.indent(2) + "key = input(\"Press a Scratch key (or Enter to quit): \")");
+      lines.push(this.indent(2) + "if key == \"\":");
+      lines.push(this.indent(3) + "break");
+      keyEvents.forEach((event, index) => {
+        lines.push(this.indent(2) + `${index === 0 ? "if" : "elif"} key.lower() == ${JSON.stringify(event.key.toLowerCase())}:`);
+        lines.push(this.indent(3) + `${event.name}()`);
+      });
+    }
+    return lines.join("\n");
+  }
+
+  globalNames() {
+    const names = Object.values(this.target.variables || {}).map((variable) => this.identifier(variable[0]));
+    if (Object.values(this.blocks).some((block) => block?.opcode === "sensing_askandwait" || block?.opcode === "sensing_answer")) names.push(this.identifier("answer"));
+    return [...new Set(names)];
+  }
+
+  listIndex(name, index) {
+    if (index === this.literal("last")) return "-1";
+    if (index === this.literal("random")) return `random.randrange(len(${name}))`;
+    return `(int(${index}) - 1)`;
+  }
 }
 
 class CppConverter extends BaseConverter {
   wrap(code) {
-    return `// Converted from Scratch 3 target: ${this.target.name}\n// Runtime helpers such as move_steps() and say() are placeholders for the Scratch engine.\n#include <string>\n#include <cstdlib>\n#include <cmath>\n\n${code || "// No scripts found."}`;
+    return `// Converted from Scratch 3 target: ${this.target.name}\n#include <algorithm>\n#include <cmath>\n#include <cstdlib>\n#include <ctime>\n#include <iostream>\n#include <sstream>\n#include <string>\n#include <vector>\n\ntemplate <typename T>\nstd::string to_text(const T& value) { std::ostringstream out; out << value; return out.str(); }\n\nint to_int(const std::string& value) { return std::stoi(value); }\nint to_int(int value) { return value; }\nint to_int(double value) { return static_cast<int>(value); }\n\nstd::string ask(const std::string& question) {\n  std::cout << question << " ";\n  std::string answer;\n  std::getline(std::cin, answer);\n  return answer;\n}\n\nstd::string current_date_part(const std::string& part) {\n  std::time_t now = std::time(nullptr);\n  std::tm* local = std::localtime(&now);\n  char buffer[32];\n  const char* format = part == "year" ? "%Y" : part == "month" ? "%m" : part == "date" ? "%d" : part == "dayofweek" ? "%A" : part == "hour" ? "%H" : part == "minute" ? "%M" : "%S";\n  std::strftime(buffer, sizeof(buffer), format, local);\n  return buffer;\n}\n\n${this.declarations()}\n\n${code || "// No scripts found."}${this.entryPoint()}`;
   }
 
   eventHeader(name) { return `void ${name}() {`; }
-  repeatHeader(times) { return `for (int i = 0; i < static_cast<int>(${times}); ++i) {`; }
+  repeatHeader(times) { return `for (int i = 0; i < to_int(${times}); ++i) {`; }
   foreverHeader() { return "while (true) {"; }
   ifHeader(condition) { return `if (${condition}) {`; }
   elseHeader() { return "} else {"; }
@@ -393,14 +470,68 @@ class CppConverter extends BaseConverter {
   notOperator() { return "!"; }
   literal(value) { return isNumeric(value) ? String(value) : JSON.stringify(String(value)); }
   call(name, args) { return `${this.identifier(name)}(${args.join(", ")});`; }
-  assign(name, value) { return `auto ${name} = ${value};`; }
+  assign(name, value) { return `${name} = ${value};`; }
   increment(name, value) { return `${name} += ${value};`; }
   stop(option) { return option === "this script" ? "return;" : `stop(${JSON.stringify(option)});`; }
   comment(text) { return `// ${text}`; }
-  toString(value) { return `std::to_string(${value})`; }
+  toString(value) { return `to_text(${value})`; }
   randomExpr(from, to) { return `(${from} + std::rand() % (${to} - ${from} + 1))`; }
   roundExpr(value) { return `std::round(${value})`; }
   containsExpr(haystack, needle) { return `(${haystack}.find(${needle}) != std::string::npos)`; }
+  printStatement(value) { return `std::cout << ${value} << std::endl;`; }
+  inputExpression(prompt) { return `ask(${prompt})`; }
+  listAppend(name, value) { return `${name}.push_back(to_text(${value}));`; }
+  listDelete(name, index) { return `${name}.erase(${name}.begin() + ${this.listIndex(name, index)});`; }
+  listClear(name) { return `${name}.clear();`; }
+  listInsert(name, index, value) { return `${name}.insert(${name}.begin() + ${this.listIndex(name, index)}, to_text(${value}));`; }
+  listReplace(name, index, value) { return `${name}[${this.listIndex(name, index)}] = to_text(${value});`; }
+  listItem(name, index) { return `${name}[${this.listIndex(name, index)}]`; }
+  listLength(name) { return `${name}.size()`; }
+  listContains(name, value) { return `(std::find(${name}.begin(), ${name}.end(), ${value}) != ${name}.end())`; }
+  currentDatePart(part) { return `current_date_part(${JSON.stringify(String(part).toLowerCase())})`; }
+
+  declarations() {
+    const lines = this.globalNames().map((name) => `std::string ${name};`);
+    for (const [, list] of Object.entries(this.target.lists || {})) {
+      const items = (list[1] || []).map((item) => JSON.stringify(String(item))).join(", ");
+      lines.push(`std::vector<std::string> ${this.identifier(list[0])} = {${items}};`);
+    }
+    return lines.join("\n");
+  }
+
+  entryPoint() {
+    const greenFlags = this.events.filter((event) => event.opcode === "event_whenflagclicked");
+    const keyEvents = this.events.filter((event) => event.opcode === "event_whenkeypressed");
+    if (greenFlags.length === 0 && keyEvents.length === 0) return "";
+    const lines = ["", "", "int main() {", this.indent(1) + "std::srand(static_cast<unsigned int>(std::time(nullptr)));"];
+    for (const event of greenFlags) lines.push(this.indent(1) + `${event.name}();`);
+    if (keyEvents.length > 0) {
+      lines.push(this.indent(1) + "while (true) {");
+      lines.push(this.indent(2) + "std::cout << \"Press a Scratch key (or Enter to quit): \";");
+      lines.push(this.indent(2) + "std::string key;");
+      lines.push(this.indent(2) + "std::getline(std::cin, key);");
+      lines.push(this.indent(2) + "if (key.empty()) break;");
+      keyEvents.forEach((event, index) => {
+        lines.push(this.indent(2) + `${index === 0 ? "if" : "else if"} (key == ${JSON.stringify(event.key)}) ${event.name}();`);
+      });
+      lines.push(this.indent(1) + "}");
+    }
+    lines.push(this.indent(1) + "return 0;");
+    lines.push("}");
+    return lines.join("\n");
+  }
+
+  globalNames() {
+    const names = Object.values(this.target.variables || {}).map((variable) => this.identifier(variable[0]));
+    if (Object.values(this.blocks).some((block) => block?.opcode === "sensing_askandwait" || block?.opcode === "sensing_answer")) names.push(this.identifier("answer"));
+    return [...new Set(names)];
+  }
+
+  listIndex(name, index) {
+    if (index === this.literal("last")) return `(${name}.size() - 1)`;
+    if (index === this.literal("random")) return `(std::rand() % ${name}.size())`;
+    return `(to_int(${index}) - 1)`;
+  }
 
   convertScript(blockId) {
     return `${super.convertScript(blockId)}\n}`;
@@ -426,19 +557,65 @@ class CppConverter extends BaseConverter {
 
 class JavaScriptConverter extends CppConverter {
   wrap(code) {
-    return `// Converted from Scratch 3 target: ${this.target.name}\n// Runtime helpers such as moveSteps() and say() are placeholders for the Scratch engine.\n\n${code || "// No scripts found."}`;
+    return `// Converted from Scratch 3 target: ${this.target.name}\nconst readline = require("readline");\nconst rl = readline.createInterface({ input: process.stdin, output: process.stdout });\nconst ask = (question) => new Promise((resolve) => rl.question(String(question) + " ", resolve));\nconst currentDatePart = (part) => {\n  const now = new Date();\n  const pad = (value) => String(value).padStart(2, "0");\n  return part === "year" ? String(now.getFullYear()) : part === "month" ? pad(now.getMonth() + 1) : part === "date" ? pad(now.getDate()) : part === "dayofweek" ? String(now.getDay() + 1) : part === "hour" ? pad(now.getHours()) : part === "minute" ? pad(now.getMinutes()) : pad(now.getSeconds());\n};\n\n${this.declarations()}\n\n${code || "// No scripts found."}${this.entryPoint()}`;
   }
 
-  eventHeader(name) { return `function ${this.camelName(name)}() {`; }
+  eventHeader(name) { return `async function ${this.camelName(name)}() {`; }
   repeatHeader(times) { return `for (let i = 0; i < Number(${times}); i++) {`; }
   literal(value) { return isNumeric(value) ? String(value) : JSON.stringify(String(value)); }
   call(name, args) { return `${this.camelName(name)}(${args.join(", ")});`; }
-  assign(name, value) { return `let ${this.camelName(name)} = ${value};`; }
+  assign(name, value) { return `${this.camelName(name)} = ${value};`; }
   increment(name, value) { return `${this.camelName(name)} += ${value};`; }
   toString(value) { return `String(${value})`; }
   randomExpr(from, to) { return `(Math.floor(Math.random() * (${to} - ${from} + 1)) + ${from})`; }
   roundExpr(value) { return `Math.round(${value})`; }
   containsExpr(haystack, needle) { return `${haystack}.includes(${needle})`; }
+  printStatement(value) { return `console.log(${value});`; }
+  inputExpression(prompt) { return `await ask(${prompt})`; }
+  listAppend(name, value) { return `${name}.push(${value});`; }
+  listDelete(name, index) { return `${name}.splice(${this.listIndex(name, index)}, 1);`; }
+  listClear(name) { return `${name}.length = 0;`; }
+  listInsert(name, index, value) { return `${name}.splice(${this.listIndex(name, index)}, 0, ${value});`; }
+  listReplace(name, index, value) { return `${name}[${this.listIndex(name, index)}] = ${value};`; }
+  listItem(name, index) { return `${name}[${this.listIndex(name, index)}]`; }
+  listLength(name) { return `${name}.length`; }
+  listContains(name, value) { return `${name}.includes(${value})`; }
+  currentDatePart(part) { return `currentDatePart(${JSON.stringify(String(part).toLowerCase())})`; }
+
+  declarations() {
+    const lines = this.globalNames().map((name) => `let ${this.camelName(name)} = "";`);
+    for (const [, list] of Object.entries(this.target.lists || {})) {
+      lines.push(`let ${this.identifier(list[0])} = ${JSON.stringify(list[1] || [])};`);
+    }
+    return lines.join("\n");
+  }
+
+  entryPoint() {
+    const greenFlags = this.events.filter((event) => event.opcode === "event_whenflagclicked");
+    const keyEvents = this.events.filter((event) => event.opcode === "event_whenkeypressed");
+    if (greenFlags.length === 0 && keyEvents.length === 0) return "";
+    const lines = ["", "", "async function main() {"];
+    for (const event of greenFlags) lines.push(this.indent(1) + `await ${this.camelName(event.name)}();`);
+    if (keyEvents.length > 0) {
+      lines.push(this.indent(1) + "while (true) {");
+      lines.push(this.indent(2) + "const key = await ask(\"Press a Scratch key (or Enter to quit):\");");
+      lines.push(this.indent(2) + "if (key === \"\") break;");
+      keyEvents.forEach((event, index) => {
+        lines.push(this.indent(2) + `${index === 0 ? "if" : "else if"} (key.toLowerCase() === ${JSON.stringify(event.key.toLowerCase())}) await ${this.camelName(event.name)}();`);
+      });
+      lines.push(this.indent(1) + "}");
+    }
+    lines.push(this.indent(1) + "rl.close();");
+    lines.push("}");
+    lines.push("main();");
+    return lines.join("\n");
+  }
+
+  listIndex(name, index) {
+    if (index === this.literal("last")) return `(${name}.length - 1)`;
+    if (index === this.literal("random")) return `Math.floor(Math.random() * ${name}.length)`;
+    return `(Number(${index}) - 1)`;
+  }
 
   identifier(name) {
     return this.camelName(super.identifier(name));
@@ -452,19 +629,65 @@ class JavaScriptConverter extends CppConverter {
 class JavaConverter extends CppConverter {
   wrap(code) {
     const className = this.className(this.target.name || "ScratchTarget");
-    return `// Converted from Scratch 3 target: ${this.target.name}\n// Runtime helpers such as moveSteps() and say() are placeholders for the Scratch engine.\n\npublic class ${className} {\n${code || this.indent(1) + "// No scripts found."}\n}`;
+    return `// Converted from Scratch 3 target: ${this.target.name}\nimport java.time.LocalDateTime;\nimport java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.Scanner;\n\npublic class ${className} {\nstatic Scanner scanner = new Scanner(System.in);\n\nstatic String ask(String question) {\n  System.out.print(question + " ");\n  return scanner.nextLine();\n}\n\nstatic String currentDatePart(String part) {\n  LocalDateTime now = LocalDateTime.now();\n  return switch (part) {\n    case "year" -> String.valueOf(now.getYear());\n    case "month" -> String.format("%02d", now.getMonthValue());\n    case "date" -> String.format("%02d", now.getDayOfMonth());\n    case "dayofweek" -> now.getDayOfWeek().toString();\n    case "hour" -> String.format("%02d", now.getHour());\n    case "minute" -> String.format("%02d", now.getMinute());\n    default -> String.format("%02d", now.getSecond());\n  };\n}\n\n${this.declarations()}\n\n${code || this.indent(1) + "// No scripts found."}${this.entryPoint()}\n}`;
   }
 
   eventHeader(name) { return `public static void ${this.camelName(name)}() {`; }
   repeatHeader(times) { return `for (int i = 0; i < (int)(${times}); i++) {`; }
   literal(value) { return isNumeric(value) ? String(value) : JSON.stringify(String(value)); }
   call(name, args) { return `${this.camelName(name)}(${args.join(", ")});`; }
-  assign(name, value) { return `var ${this.camelName(name)} = ${value};`; }
+  assign(name, value) { return `${this.camelName(name)} = ${value};`; }
   increment(name, value) { return `${this.camelName(name)} += ${value};`; }
   toString(value) { return `String.valueOf(${value})`; }
   randomExpr(from, to) { return `((int)(Math.random() * (${to} - ${from} + 1)) + ${from})`; }
   roundExpr(value) { return `Math.round(${value})`; }
   containsExpr(haystack, needle) { return `${haystack}.contains(${needle})`; }
+  printStatement(value) { return `System.out.println(${value});`; }
+  inputExpression(prompt) { return `ask(String.valueOf(${prompt}))`; }
+  listAppend(name, value) { return `${name}.add(String.valueOf(${value}));`; }
+  listDelete(name, index) { return `${name}.remove(${this.listIndex(name, index)});`; }
+  listClear(name) { return `${name}.clear();`; }
+  listInsert(name, index, value) { return `${name}.add(${this.listIndex(name, index)}, String.valueOf(${value}));`; }
+  listReplace(name, index, value) { return `${name}.set(${this.listIndex(name, index)}, String.valueOf(${value}));`; }
+  listItem(name, index) { return `${name}.get(${this.listIndex(name, index)})`; }
+  listLength(name) { return `${name}.size()`; }
+  listContains(name, value) { return `${name}.contains(String.valueOf(${value}))`; }
+  currentDatePart(part) { return `currentDatePart(${JSON.stringify(String(part).toLowerCase())})`; }
+
+  declarations() {
+    const lines = this.globalNames().map((name) => `static String ${this.camelName(name)} = "";`);
+    for (const [, list] of Object.entries(this.target.lists || {})) {
+      const items = (list[1] || []).map((item) => JSON.stringify(String(item))).join(", ");
+      lines.push(`static ArrayList<String> ${this.identifier(list[0])} = new ArrayList<>(Arrays.asList(${items}));`);
+    }
+    return lines.join("\n");
+  }
+
+  entryPoint() {
+    const greenFlags = this.events.filter((event) => event.opcode === "event_whenflagclicked");
+    const keyEvents = this.events.filter((event) => event.opcode === "event_whenkeypressed");
+    if (greenFlags.length === 0 && keyEvents.length === 0) return "";
+    const lines = ["", "", "public static void main(String[] args) {"];
+    for (const event of greenFlags) lines.push(this.indent(1) + `${this.camelName(event.name)}();`);
+    if (keyEvents.length > 0) {
+      lines.push(this.indent(1) + "while (true) {");
+      lines.push(this.indent(2) + "System.out.print(\"Press a Scratch key (or Enter to quit): \");");
+      lines.push(this.indent(2) + "String key = scanner.nextLine();");
+      lines.push(this.indent(2) + "if (key.isEmpty()) break;");
+      keyEvents.forEach((event, index) => {
+        lines.push(this.indent(2) + `${index === 0 ? "if" : "else if"} (key.equalsIgnoreCase(${JSON.stringify(event.key)})) ${this.camelName(event.name)}();`);
+      });
+      lines.push(this.indent(1) + "}");
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }
+
+  listIndex(name, index) {
+    if (index === this.literal("last")) return `(${name}.size() - 1)`;
+    if (index === this.literal("random")) return `((int)(Math.random() * ${name}.size()))`;
+    return `(Integer.parseInt(String.valueOf(${index})) - 1)`;
+  }
 
   identifier(name) {
     return this.camelName(super.identifier(name));
@@ -483,18 +706,65 @@ class JavaConverter extends CppConverter {
 class CSharpConverter extends JavaConverter {
   wrap(code) {
     const className = this.className(this.target.name || "ScratchTarget");
-    return `// Converted from Scratch 3 target: ${this.target.name}\n// Runtime helpers such as MoveSteps() and Say() are placeholders for the Scratch engine.\nusing System;\n\npublic class ${className}\n{\n${code || this.indent(1) + "// No scripts found."}\n}`;
+    return `// Converted from Scratch 3 target: ${this.target.name}\nusing System;\nusing System.Collections.Generic;\n\npublic class ${className}\n{\nstatic string Ask(string question)\n{\n  Console.Write(question + " ");\n  return Console.ReadLine() ?? "";\n}\n\nstatic string CurrentDatePart(string part)\n{\n  var now = DateTime.Now;\n  return part switch\n  {\n    "year" => now.ToString("yyyy"),\n    "month" => now.ToString("MM"),\n    "date" => now.ToString("dd"),\n    "dayofweek" => now.DayOfWeek.ToString(),\n    "hour" => now.ToString("HH"),\n    "minute" => now.ToString("mm"),\n    _ => now.ToString("ss")\n  };\n}\n\n${this.declarations()}\n\n${code || this.indent(1) + "// No scripts found."}${this.entryPoint()}\n}`;
   }
 
   eventHeader(name) { return `public static void ${this.pascalName(name)}() {`; }
   repeatHeader(times) { return `for (int i = 0; i < (int)(${times}); i++) {`; }
   call(name, args) { return `${this.pascalName(name)}(${args.join(", ")});`; }
-  assign(name, value) { return `var ${this.camelName(name)} = ${value};`; }
   increment(name, value) { return `${this.camelName(name)} += ${value};`; }
-  toString(value) { return `${value}.ToString()`; }
+  assign(name, value) { return `${this.camelName(name)} = ${value};`; }
+  toString(value) { return `Convert.ToString(${value})`; }
   randomExpr(from, to) { return `Random.Shared.Next((int)(${from}), (int)(${to}) + 1)`; }
   roundExpr(value) { return `Math.Round(${value})`; }
   containsExpr(haystack, needle) { return `${haystack}.Contains(${needle})`; }
+  printStatement(value) { return `Console.WriteLine(${value});`; }
+  inputExpression(prompt) { return `Ask(Convert.ToString(${prompt}) ?? "")`; }
+  listAppend(name, value) { return `${this.camelName(name)}.Add(Convert.ToString(${value}) ?? "");`; }
+  listDelete(name, index) { return `${this.camelName(name)}.RemoveAt(${this.listIndex(name, index)});`; }
+  listClear(name) { return `${this.camelName(name)}.Clear();`; }
+  listInsert(name, index, value) { return `${this.camelName(name)}.Insert(${this.listIndex(name, index)}, Convert.ToString(${value}) ?? "");`; }
+  listReplace(name, index, value) { return `${this.camelName(name)}[${this.listIndex(name, index)}] = Convert.ToString(${value}) ?? "";`; }
+  listItem(name, index) { return `${this.camelName(name)}[${this.listIndex(name, index)}]`; }
+  listLength(name) { return `${this.camelName(name)}.Count`; }
+  listContains(name, value) { return `${this.camelName(name)}.Contains(Convert.ToString(${value}) ?? "")`; }
+  currentDatePart(part) { return `CurrentDatePart(${JSON.stringify(String(part).toLowerCase())})`; }
+
+  declarations() {
+    const lines = this.globalNames().map((name) => `static string ${this.camelName(name)} = "";`);
+    for (const [, list] of Object.entries(this.target.lists || {})) {
+      const items = (list[1] || []).map((item) => JSON.stringify(String(item))).join(", ");
+      lines.push(`static List<string> ${this.identifier(list[0])} = new List<string> { ${items} };`);
+    }
+    return lines.join("\n");
+  }
+
+  entryPoint() {
+    const greenFlags = this.events.filter((event) => event.opcode === "event_whenflagclicked");
+    const keyEvents = this.events.filter((event) => event.opcode === "event_whenkeypressed");
+    if (greenFlags.length === 0 && keyEvents.length === 0) return "";
+    const lines = ["", "", "public static void Main(string[] args)", "{"];
+    for (const event of greenFlags) lines.push(this.indent(1) + `${this.pascalName(event.name)}();`);
+    if (keyEvents.length > 0) {
+      lines.push(this.indent(1) + "while (true)");
+      lines.push(this.indent(1) + "{");
+      lines.push(this.indent(2) + "Console.Write(\"Press a Scratch key (or Enter to quit): \");");
+      lines.push(this.indent(2) + "var key = Console.ReadLine() ?? \"\";");
+      lines.push(this.indent(2) + "if (key == \"\") break;");
+      keyEvents.forEach((event, index) => {
+        lines.push(this.indent(2) + `${index === 0 ? "if" : "else if"} (key.Equals(${JSON.stringify(event.key)}, StringComparison.OrdinalIgnoreCase)) ${this.pascalName(event.name)}();`);
+      });
+      lines.push(this.indent(1) + "}");
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }
+
+  listIndex(name, index) {
+    if (index === this.literal("last")) return `(${this.camelName(name)}.Count - 1)`;
+    if (index === this.literal("random")) return `Random.Shared.Next(${this.camelName(name)}.Count)`;
+    return `(int.Parse(Convert.ToString(${index}) ?? "1") - 1)`;
+  }
 
   identifier(name) {
     return this.camelName(BaseConverter.prototype.identifier.call(this, name));
@@ -532,5 +802,5 @@ function escapeHtml(value) {
 }
 
 function isNumeric(value) {
-  return value !== "" && value !== null && !Number.isNaN(Number(value));
+  return value !== null && value !== undefined && String(value).trim() !== "" && !Number.isNaN(Number(value));
 }
